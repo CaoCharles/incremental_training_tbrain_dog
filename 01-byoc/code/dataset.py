@@ -1,22 +1,69 @@
 import os
 import pandas as pd
 import numpy as np
-import soundfile as sf
-from tqdm import tqdm
-import resampy
+
+import random
 import librosa
 
 from torch.utils.data import Dataset
 
-try:
-    def wav_read(wav_file):
-        wav_data, sr = sf.read(wav_file, dtype='int16')
-        return wav_data, sr
+# try:
+#     def wav_read(wav_file):
+#         wav_data, sr = sf.read(wav_file, dtype='int16')
+#         return wav_data, sr
 
-except ImportError:
-    def wav_read(wav_file):
-        raise NotImplementedError('WAV file reading requires soundfile package.')
+# except ImportError:
+#     def wav_read(wav_file):
+#         raise NotImplementedError('WAV file reading requires soundfile package.')
 
+# 製作頻譜圖
+def get_melspec(prefix, file_name):
+  y, sr = librosa.load(f'{prefix}/{file_name}.wav', sr = 8000)
+  if len(y)<sr*5:
+      print(prefix,file_name)
+      l = sr*5-len(y)
+      y = np.hstack([y,np.zeros(l)])
+  mel_spec = librosa.power_to_db(librosa.feature.melspectrogram(y, sr=sr, n_mels=128, n_fft=1024, hop_length=256))
+  return mel_spec
+
+# 資料增強(SpecAugment)
+def spec_augment(spec: np.ndarray, num_mask=3, 
+                 freq_masking_max_percentage=0.1, time_masking_max_percentage=0.1):
+    '''Crate Augment Data'''
+    spec = spec.copy()
+    for i in range(num_mask):
+        all_frames_num, all_freqs_num = spec.shape
+        freq_percentage = random.uniform(0.0, freq_masking_max_percentage)
+        
+        num_freqs_to_mask = int(freq_percentage * all_freqs_num)
+        f0 = np.random.uniform(low=0.0, high=all_freqs_num - num_freqs_to_mask)
+        f0 = int(f0)
+        spec[:, f0:f0 + num_freqs_to_mask] = 0
+
+        time_percentage = random.uniform(0.0, time_masking_max_percentage)
+        
+        num_frames_to_mask = int(time_percentage * all_frames_num)
+        t0 = np.random.uniform(low=0.0, high=all_frames_num - num_frames_to_mask)
+        t0 = int(t0)
+        spec[t0:t0 + num_frames_to_mask, :] = 0
+    
+    return spec
+
+def add_noise(spec):
+    h, w = spec.shape
+    amp = np.random.uniform(0,spec.max()/10)
+    white_noise = np.random.randn(h, w)*amp
+    return spec+white_noise
+
+def time_shift(spec):
+    cut = np.random.choice(spec.shape[1])
+    return np.hstack([spec[:,cut:],spec[:,:cut]])
+
+def add_gain(spec):
+    gain = np.random.choice(25)-12
+    return spec+spec
+
+# 讀取資料
 class SoundDataset(Dataset):
     """Create Sound Dataset with loading wav files and labels from csv.
 
@@ -24,174 +71,83 @@ class SoundDataset(Dataset):
         params: A class containing all the parameters.
         data_type: A string indicating train or val.
         csvfile: A string containing our wav files and labels.
-        normalize: A boolean indicating spectrogram is normalized to -1 to 1 or not.
         mixup: A boolean indicating whether to do mixup augmentation or not.
-        preload: A boolean indicating whether to preload the spectrogram into memory or not.
     """
-    def __init__(self, params):
+    def __init__(self, spec, label=None, mode='train', params):
         """Init SoundDataset with params
         Args:
             params (class): all arguments parsed from argparse
             train (bool): train or val dataset
         """
+        # 主講者寫的
         self.params = params
         self.csvfile = params.csv_path
         self.data_dir = params.data_dir
-        self.normalize = self.params.normalize
-        self.preload = self.params.preload
 
-        self.X, self.Y, self.filenames = self.read_data(self.csvfile)
-        if self.preload:
-            self.X = self.convert_to_spec(self.X)
-            self.shape = self.get_shape(self.X[0])
-        else:
-            self.shape = self.get_shape(self.preprocessing(self.X[0][0], self.X[0][1]))
-
-    def read_data(self, csvfile):
-        """Read wav file from csv
-        Args:
-            csvfile: A string specifying the path of csvfile
-        Return:
-            data: A list of tuple (wav data in np.int16 data type, sampling rate of wav file)
-            label: A list of labels corresponding to the wav data
-            filenames: A list of filenames of the wav file
-        """
-        df = pd.read_csv(csvfile)
-        data, label, filenames = [], [], []
-        print("reading wav files...")
-        for i in tqdm(range(len(df))):
-            row = df.iloc[i]
-            path = os.path.join(self.data_dir, row.Filename + ".wav")
-            wav_data, sr = wav_read(path)
-            assert wav_data.dtype == np.int16
-            data.append((wav_data, sr))
-            label.append(row.Label)
-            filenames.append(path)
-        return data, label, filenames
-
-    def convert_to_spec(self, data):
-        """Convert wav_data into log mel spectrogram.
-        Args:
-            data: A list of tuple (wav data in np.int16 data type, sampling rate of wav file)
-        Return:
-            A list of log mel spectrogram
-        """
-        print("convert to log mel spectrogram...")
-        return [self.preprocessing(wav, sr) for wav, sr in tqdm(data)]
-
-    def spec_to_image(self, specs, eps=1e-6):
-        """ normalize the input
-        Args:
-            specs: A list of log mel spectrogram
-        Return:
-            A list of normalized log mel spectrogram
-        """
-        x = []
-        for spec in specs:
-            spec = np.squeeze(np.array(spec))
-            mean = spec.mean()
-            std = spec.std()
-            spec_norm = (spec - mean) / (std + eps)
-            spec_min, spec_max = spec_norm.min(), spec_norm.max()
-            spec_scaled = (spec_norm - spec_min) / (spec_max - spec_min)
-            spec_scaled = np.reshape(spec_scaled, (1, spec_scaled.shape[0], spec_scaled.shape[1]))
-            x.append(spec_scaled)
-        return np.array(x).astype('float32')
-
-    def get_shape(self, x):
-        """Get the shape of input data.
-        """
-        return x.shape
-
-    def preprocessing(self, wav_data, sr):
-        """Convert wav_data to log mel spectrogram.
-            1. normalize the wav_data
-            2. convert the wav_data into mono-channel
-            3. resample the wav_data to the sampling rate we want
-            4. compute the log mel spetrogram with librosa function
-        Args:
-            wav_data: An np.array indicating wav data in np.int16 datatype
-            sr: An integer specifying the sampling rate of this wav data
-        Return:
-            inpt: An np.array indicating the log mel spectrogram of data
-        """
-        # normalize wav_data
-        if self.normalize == 'peak':
-            samples = wav_data/np.max(wav_data)
-        elif self.normalize == 'rms':
-            rms_level = 0
-            r = 10**(rms_level / 10.0)
-            a = np.sqrt((len(wav_data) * r**2) / np.sum(wav_data**2))
-            samples = wav_data * a
-        else:
-            samples = wav_data / 32768.0
-
-        # convert samples to mono-channel file
-        if len(samples.shape) > 1:
-            samples = np.mean(samples, axis=1)
-
-        # resample samples to 8k
-        if sr != self.params.sr:
-            samples = resampy.resample(samples, sr, self.params.sr)
-
-        # transform samples to mel spectrogram
-        inpt_x = 500
-        spec = librosa.feature.melspectrogram(samples, sr=self.params.sr, n_fft=self.params.nfft, hop_length=self.params.hop, n_mels=self.params.mel)
-        spec_db = librosa.power_to_db(spec).T
-        spec_db = np.concatenate((spec_db, np.zeros((inpt_x - spec_db.shape[0], self.params.mel))), axis=0) if spec_db.shape[0] < inpt_x else spec_db[:inpt_x]
-        inpt = np.reshape(spec_db, (1, spec_db.shape[0], spec_db.shape[1]))
-        # inpt = np.reshape(spec_db, (spec_db.shape[0], spec_db.shape[1]))
-
-        return inpt.astype('float32')
+        # 我們需要的
+        self.specs = spec
+        self.labels = label
+        self.mode = mode
 
     def __len__(self):
-        return len(self.X)
+        return len(self.specs)
 
     def __getitem__(self, idx):
-        spec = self.X[idx] if self.params.preload else self.preprocessing(self.X[idx][0], self.X[idx][1])
-        label = self.Y[idx]
+        # Augment here if you want
+        mel_spec = self.specs[idx]
+        # Stack mel_spec data 
+        if self.mode=='train':
+            p = 0.8
+            if random.random()<p: mel_spec = add_noise(mel_spec)
+            if random.random()<p: mel_spec = time_shift(mel_spec)
+            if random.random()<p: mel_spec = add_gain(mel_spec)
+            if random.random()<p:
+                mel_spec = spec_augment(mel_spec,num_mask=3, freq_masking_max_percentage=0.1, time_masking_max_percentage=0.1)
+        
+        # Stack 組合成照片
+        mel_spec = np.stack((mel_spec, mel_spec, mel_spec))/255
+        # print(mel_spec.shape)
+        return mel_spec, self.labels[idx]
 
-        return spec.astype('float32'), label
 
+# class SoundDataset_test(SoundDataset):
+#     def __init__(self, params):
+#         self.params = params
+#         self.csvfile = params.csv_path
+#         self.data_dir = params.data_dir
+#         self.normalize = self.params.normalize
+#         self.preload = self.params.preload
 
-class SoundDataset_test(SoundDataset):
-    def __init__(self, params):
-        self.params = params
-        self.csvfile = params.csv_path
-        self.data_dir = params.data_dir
-        self.normalize = self.params.normalize
-        self.preload = self.params.preload
+#         self.X, self.Y, self.filenames = self.read_data(self.csvfile)
+#         if self.preload:
+#             self.X = self.convert_to_spec(self.X)
+#             self.shape = self.get_shape(self.X[0])
+#         else:
+#             self.shape = self.get_shape(self.preprocessing(self.X[0][0], self.X[0][1]))
 
-        self.X, self.Y, self.filenames = self.read_data(self.csvfile)
-        if self.preload:
-            self.X = self.convert_to_spec(self.X)
-            self.shape = self.get_shape(self.X[0])
-        else:
-            self.shape = self.get_shape(self.preprocessing(self.X[0][0], self.X[0][1]))
-
-    def read_data(self, csvfile):
-        df = pd.read_csv(csvfile)
-        data, label, filenames = [], [], []
-        print("reading wav files...")
-        for i in tqdm(range(len(df))):
-            row = df.iloc[i]
-            path = os.path.join(self.data_dir, row.Filename + ".wav")
-            wav_data, sr = wav_read(path)
-            assert wav_data.dtype == np.int16
-            data.append((wav_data, sr))
-            lb = None
-            if row.Barking == 1:
-                lb = 0
-            elif row.Howling == 1:
-                lb = 1
-            elif row.Crying == 1:
-                lb = 2
-            elif row.COSmoke == 1:
-                lb = 3
-            elif row.GlassBreaking == 1:
-                lb = 4
-            elif row.Other == 1:
-                lb = 5
-            label.append(lb)
-            filenames.append(path)
-        return data, label, filenames
+#     def read_data(self, csvfile):
+#         df = pd.read_csv(csvfile)
+#         data, label, filenames = [], [], []
+#         print("reading wav files...")
+#         for i in tqdm(range(len(df))):
+#             row = df.iloc[i]
+#             path = os.path.join(self.data_dir, row.Filename + ".wav")
+#             wav_data, sr = wav_read(path)
+#             assert wav_data.dtype == np.int16
+#             data.append((wav_data, sr))
+#             lb = None
+#             if row.Barking == 1:
+#                 lb = 0
+#             elif row.Howling == 1:
+#                 lb = 1
+#             elif row.Crying == 1:
+#                 lb = 2
+#             elif row.COSmoke == 1:
+#                 lb = 3
+#             elif row.GlassBreaking == 1:
+#                 lb = 4
+#             elif row.Other == 1:
+#                 lb = 5
+#             label.append(lb)
+#             filenames.append(path)
+#         return data, label, filenames
