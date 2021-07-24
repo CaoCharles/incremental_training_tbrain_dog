@@ -1,5 +1,6 @@
 import torch
 from copy import deepcopy
+
 class ModelEMA(object):
     def __init__(self, model, decay=0.001):
         self.ema = deepcopy(model)

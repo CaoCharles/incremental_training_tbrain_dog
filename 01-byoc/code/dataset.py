@@ -73,16 +73,16 @@ class SoundDataset(Dataset):
         csvfile: A string containing our wav files and labels.
         mixup: A boolean indicating whether to do mixup augmentation or not.
     """
-    def __init__(self, spec, label=None, mode='train', params):
+    def __init__(self, spec, label=None, mode='train'):
         """Init SoundDataset with params
         Args:
             params (class): all arguments parsed from argparse
             train (bool): train or val dataset
         """
         # 主講者寫的
-        self.params = params
-        self.csvfile = params.csv_path
-        self.data_dir = params.data_dir
+#         self.params = params
+#         self.csvfile = params.csv_path
+#         self.data_dir = params.data_dir
 
         # 我們需要的
         self.specs = spec

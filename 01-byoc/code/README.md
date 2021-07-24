@@ -123,8 +123,8 @@ root
 ### Our Training Code Architecture
 ```bash
 root
-├── model
-│    └── 0710
+├── model_efn
+│    └── eff_class10_0714
 │        └── model_acc_fold_ ... .ckpt
 │
 ├── README.md
@@ -155,7 +155,7 @@ Users can test the model with the following example command:
 # AWS的寫法
 python test.py --test_csv ./meta_public_test.csv --data_dir ./private_test --model_name VGGish --model_path [path_of_models] --saved_root results/test --saved_name test_result
 # 我們的寫法
-或是直接用jupyter寫
+直接在jupyter寫啦
 ```
 
 The testing results will be saved in ```--saved_root``` and the prefix of files will be ```--saved_name```. You'll get the classfication report and the confusion matrix in txt format.

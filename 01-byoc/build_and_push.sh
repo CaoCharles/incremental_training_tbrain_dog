@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # The name of our algorithm
-algorithm_name=vgg16-audio
+algorithm_name=vgg-audio
 
 #cd container
 # get information - account and region, required by ECR https://aws.amazon.com/ecr/
